@@ -14,7 +14,6 @@ const els = {
   globalPie: document.getElementById("globalPie"),
   globalStatsText: document.getElementById("globalStatsText"),
   exportBtn: document.getElementById("exportBtn"),
-  addProjectBtn: document.getElementById("addProjectBtn"),
   projectTrash: document.getElementById("projectTrash"),
   projectTemplate: document.getElementById("projectTemplate"),
   taskTemplate: document.getElementById("taskTemplate")
@@ -201,7 +200,6 @@ function saveState(next = state) {
 }
 
 function wireEvents() {
-  els.addProjectBtn.addEventListener("click", createProject);
   els.exportBtn.addEventListener("click", exportSummary);
   wireBoardScrollSync();
 
@@ -332,6 +330,14 @@ function renderBoard() {
     setupTaskDropzone(zone, project.id, project.view);
     els.board.append(node);
   }
+
+  const newProjectTile = document.createElement("button");
+  newProjectTile.type = "button";
+  newProjectTile.className = "project-new-tile";
+  newProjectTile.setAttribute("aria-label", "New project");
+  newProjectTile.innerHTML = `<span class="plus">+</span><span class="label">new project</span>`;
+  newProjectTile.addEventListener("click", createProject);
+  els.board.append(newProjectTile);
 }
 
 function drawTodoList(zone, taskIds) {
@@ -813,15 +819,30 @@ function moveProjectPlaceholder(x) {
     }
   }
 
-  if (before) els.board.insertBefore(projectPlaceholder, before);
-  else els.board.append(projectPlaceholder);
+  if (before) {
+    els.board.insertBefore(projectPlaceholder, before);
+    return;
+  }
+
+  const newProjectTile = els.board.querySelector(".project-new-tile");
+  if (newProjectTile) {
+    els.board.insertBefore(projectPlaceholder, newProjectTile);
+  } else {
+    els.board.append(projectPlaceholder);
+  }
 }
 
 function getProjectPlaceholderIndex() {
   if (!projectPlaceholder || !projectPlaceholder.parentElement) return state.projects.length;
 
-  const nodes = [...els.board.children];
-  return nodes.indexOf(projectPlaceholder);
+  let index = 0;
+  for (const node of els.board.children) {
+    if (node === projectPlaceholder) return index;
+    if (node.classList.contains("project") && !node.classList.contains("project-placeholder")) {
+      index += 1;
+    }
+  }
+  return state.projects.length;
 }
 
 function createTaskPlaceholder(taskNode) {
