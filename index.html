@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NoBullshit Board</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="top">
+      <div class="top-row">
+        <div>
+          <h1>NoBullshit Board</h1>
+          <p>Multiproject Miniban</p>
+        </div>
+        <div class="global-summary">
+          <div id="globalPie" class="global-pie"></div>
+          <div id="globalStatsText" class="global-stats-text"></div>
+        </div>
+        <button id="exportBtn" class="export-btn" type="button">Export</button>
+        <button id="addProjectBtn" class="project-plus" type="button">+ Project</button>
+        <div id="projectTrash" class="project-trash" aria-label="Delete">Trash</div>
+      </div>
+    </header>
+
+    <section class="board-wrap" aria-label="Projects">
+      <div id="boardTopScroll" class="board-top-scroll" aria-hidden="true">
+        <div id="boardTopScrollInner" class="board-top-scroll-inner"></div>
+      </div>
+      <section id="board" class="board" aria-live="polite"></section>
+    </section>
+  </main>
+
+  <template id="projectTemplate">
+    <article class="project" data-project-id="" draggable="true">
+      <div class="resize-handle left" aria-hidden="true"></div>
+      <div class="resize-handle right" aria-hidden="true"></div>
+      <div class="project-head">
+        <div class="project-head-left">
+          <div class="project-pie"></div>
+          <div class="project-title-wrap">
+            <h2 class="project-title" title="Click to rename"></h2>
+            <input class="project-title-input" type="text" />
+          </div>
+        </div>
+        <div class="project-actions">
+          <button class="archive-btn" type="button">Archive</button>
+          <button class="list-toggle" type="button"></button>
+        </div>
+      </div>
+      <button class="task-add-strip" type="button" aria-label="Add task"></button>
+      <div class="dropzone" data-status="todo"></div>
+    </article>
+  </template>
+
+  <template id="taskTemplate">
+    <div class="task" draggable="true" data-id="">
+      <div class="task-body">
+        <div class="task-tags"></div>
+        <textarea class="task-text" placeholder="new task"></textarea>
+        <div class="task-preview"></div>
+      </div>
+      <div class="task-side">
+        <button class="done-btn" type="button" aria-label="Toggle done">✓</button>
+        <button class="emoji-btn" type="button" aria-label="Add emoji">🙂</button>
+      </div>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
