@@ -4,21 +4,31 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>NoBullshit Board</title>
-  <link rel="stylesheet" href="styles.css?v=20260312a" />
+  <link rel="stylesheet" href="styles.css?v=20260312c" />
 </head>
 <body>
   <main class="app">
     <header class="top">
       <div class="top-row">
         <div>
-          <h1>NoBullshit Board</h1>
+          <div class="board-title-wrap" id="boardTitleWrap">
+            <h1><span id="boardNameDisplay" class="board-name-display"></span> Board</h1>
+          </div>
           <p>Multiproject Miniban</p>
         </div>
         <div class="global-summary">
           <div id="globalPie" class="global-pie"></div>
           <div id="globalStatsText" class="global-stats-text"></div>
         </div>
-        <button id="exportBtn" class="export-btn" type="button">Export</button>
+        <div id="moreMenu" class="more-menu">
+          <button id="moreBtn" class="more-btn" type="button" aria-label="Menu" aria-expanded="false">⋯</button>
+          <div id="moreDropdown" class="more-dropdown" hidden>
+            <button id="newBoardAction" type="button">Start new board</button>
+            <button id="exportPdfAction" type="button">Export PDF summary</button>
+            <button id="exportSheetAction" type="button">Export sheet</button>
+            <button id="importSheetAction" type="button">Import sheet</button>
+          </div>
+        </div>
         <div id="projectTrash" class="project-trash" aria-label="Delete">Trash</div>
       </div>
     </header>
@@ -67,6 +77,6 @@
     </div>
   </template>
 
-  <script src="app.js?v=20260312a"></script>
+  <script src="app.js?v=20260312c"></script>
 </body>
 </html>

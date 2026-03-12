@@ -50,7 +50,7 @@ body {
 .global-summary {
   position: absolute;
   top: 8px;
-  right: 110px;
+  right: 76px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -71,6 +71,22 @@ body {
 .top h1 {
   margin: 0;
   font-size: clamp(1.55rem, 1.5vw + 1rem, 2.2rem);
+}
+
+.board-title-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.board-name-display {
+  cursor: text;
+  border-radius: 8px;
+  padding: 0 4px;
+  outline: none;
+}
+
+.board-title-wrap.editing .board-name-display {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .top p {
@@ -96,10 +112,53 @@ button,
   color: var(--ink);
 }
 
-.export-btn {
+.more-menu {
   position: absolute;
   top: 0;
   right: 0;
+}
+
+.more-btn {
+  min-width: 56px;
+  font-size: 2rem;
+  line-height: 1;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+
+.more-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 210px;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--line), white 20%);
+  border-radius: 12px;
+  background: rgba(18, 24, 40, 0.96);
+  box-shadow: 0 16px 26px rgba(0, 0, 0, 0.35);
+  z-index: 25;
+}
+
+.more-dropdown[hidden] {
+  display: none;
+}
+
+.more-dropdown button {
+  min-height: 40px;
+  width: 100%;
+  font-size: 0.92rem;
+  font-weight: 700;
+  text-align: left;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.more-dropdown button:hover {
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .project-trash {
@@ -642,6 +701,16 @@ body.is-dragging .project-trash {
   color: var(--muted);
 }
 
+.task-preview a {
+  color: #b9d6ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.task-preview a:hover {
+  color: #d4e5ff;
+}
+
 .task-body.editing .task-preview {
   display: none;
 }
@@ -755,15 +824,15 @@ body.is-dragging .project-trash {
     padding-top: 96px;
   }
 
-  .export-btn {
+  .more-menu {
     right: 0;
     top: 0;
   }
 
   .global-summary {
-    right: 0;
+    right: 74px;
     top: 54px;
-    width: 100%;
+    width: auto;
   }
 
   .project {

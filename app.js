@@ -1,5 +1,6 @@
-const STORAGE_KEY = "tiny-task-board-v6";
+const STORAGE_NAMESPACE = "tiny-task-board-v7";
 const LEGACY_KEYS = [
+  "tiny-task-board-v6",
   "tiny-task-board-v5",
   "tiny-task-board-v4",
   "tiny-task-board-v3",
@@ -8,18 +9,27 @@ const LEGACY_KEYS = [
 ];
 
 const els = {
+  boardTitleWrap: document.getElementById("boardTitleWrap"),
+  boardNameDisplay: document.getElementById("boardNameDisplay"),
   board: document.getElementById("board"),
   boardTopScroll: document.getElementById("boardTopScroll"),
   boardTopScrollInner: document.getElementById("boardTopScrollInner"),
   globalPie: document.getElementById("globalPie"),
   globalStatsText: document.getElementById("globalStatsText"),
-  exportBtn: document.getElementById("exportBtn"),
+  moreMenu: document.getElementById("moreMenu"),
+  moreBtn: document.getElementById("moreBtn"),
+  moreDropdown: document.getElementById("moreDropdown"),
+  newBoardAction: document.getElementById("newBoardAction"),
+  exportPdfAction: document.getElementById("exportPdfAction"),
+  exportSheetAction: document.getElementById("exportSheetAction"),
+  importSheetAction: document.getElementById("importSheetAction"),
   projectTrash: document.getElementById("projectTrash"),
   projectTemplate: document.getElementById("projectTemplate"),
   taskTemplate: document.getElementById("taskTemplate")
 };
 
-let state = loadState();
+let currentBoardSlug = getBoardSlugFromUrl();
+let state = loadState(currentBoardSlug);
 let dragTaskId = null;
 let dragProjectId = null;
 let pendingFocusTaskId = null;
@@ -30,11 +40,12 @@ let openEmojiMenu = null;
 const QUICK_EMOJIS = ["😀", "😅", "😍", "🤩", "🔥", "✅", "🚀", "🎯", "🧠", "📌", "📅", "💡", "🛠️", "🧹", "🧩", "🎵", "💰", "📞"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-render();
 wireEvents();
+render();
+ensureBoardSlugInUrl(currentBoardSlug);
 
-function loadState() {
-  const current = localStorage.getItem(STORAGE_KEY);
+function loadState(boardSlug) {
+  const current = localStorage.getItem(storageKeyFor(boardSlug));
   if (current) {
     try {
       const normalized = normalizeState(JSON.parse(current));
@@ -51,7 +62,7 @@ function loadState() {
     try {
       const normalized = normalizeAnyLegacy(JSON.parse(raw));
       if (normalized) {
-        saveState(normalized);
+        localStorage.setItem(storageKeyFor(boardSlug), JSON.stringify(normalized));
         return normalized;
       }
     } catch {
@@ -59,13 +70,14 @@ function loadState() {
     }
   }
 
-  return makeDefaultState();
+  return makeDefaultState(slugToBoardName(boardSlug));
 }
 
-function makeDefaultState() {
+function makeDefaultState(boardName = "_____") {
   const id = makeId();
   return {
-    version: 6,
+    version: 7,
+    boardName: boardName.trim() || "_____",
     projects: [{ id, name: "General", view: "todo", width: 1 }],
     tasks: {},
     lists: {
@@ -127,7 +139,8 @@ function normalizeState(parsed) {
   }
 
   return {
-    version: 6,
+    version: 7,
+    boardName: typeof parsed.boardName === "string" && parsed.boardName.trim() ? parsed.boardName.trim() : "_____",
     projects,
     tasks,
     lists
@@ -196,11 +209,117 @@ function normalizeAnyLegacy(parsed) {
 }
 
 function saveState(next = state) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  localStorage.setItem(storageKeyFor(currentBoardSlug), JSON.stringify(next));
+}
+
+function storageKeyFor(boardSlug) {
+  return `${STORAGE_NAMESPACE}::${boardSlug}`;
+}
+
+function getBoardSlugFromUrl() {
+  const hash = window.location.hash.replace(/^#/, "").trim();
+  return normalizeBoardSlug(hash) || "main";
+}
+
+function normalizeBoardSlug(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
+function slugifyBoardName(name) {
+  return normalizeBoardSlug(name) || "board";
+}
+
+function slugToBoardName(slug) {
+  return String(slug || "_____")
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || "_____";
+}
+
+function ensureUniqueBoardSlug(baseSlug, keepCurrentSlug = "") {
+  const base = normalizeBoardSlug(baseSlug) || "board";
+  let slug = base;
+  let suffix = 2;
+  while (slug !== keepCurrentSlug && localStorage.getItem(storageKeyFor(slug))) {
+    slug = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return slug;
+}
+
+function ensureBoardSlugInUrl(slug) {
+  const normalized = normalizeBoardSlug(slug) || "main";
+  if (getBoardSlugFromUrl() === normalized) return;
+  window.location.hash = normalized;
+}
+
+function switchBoardFromUrl() {
+  const nextSlug = getBoardSlugFromUrl();
+  if (nextSlug === currentBoardSlug) return;
+  currentBoardSlug = nextSlug;
+  state = loadState(currentBoardSlug);
+  render();
+}
+
+function persistBoardUnderSlug(nextSlug, previousSlug = currentBoardSlug) {
+  localStorage.setItem(storageKeyFor(nextSlug), JSON.stringify(state));
+  if (previousSlug && previousSlug !== nextSlug) {
+    localStorage.removeItem(storageKeyFor(previousSlug));
+  }
 }
 
 function wireEvents() {
-  els.exportBtn.addEventListener("click", exportSummary);
+  els.boardNameDisplay.addEventListener("click", () => {
+    startBoardNameInlineEdit();
+  });
+  els.boardNameDisplay.addEventListener("blur", finishBoardNameEdit);
+  els.boardNameDisplay.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finishBoardNameEdit();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      els.boardNameDisplay.textContent = state.boardName || "_____";
+      els.boardNameDisplay.contentEditable = "false";
+      els.boardTitleWrap.classList.remove("editing");
+    }
+  });
+
+  els.moreBtn.addEventListener("click", toggleMoreMenu);
+  els.newBoardAction.addEventListener("click", () => {
+    closeMoreMenu();
+    startNewBoard();
+  });
+  els.exportPdfAction.addEventListener("click", () => {
+    closeMoreMenu();
+    exportPdfSummary();
+  });
+  els.exportSheetAction.addEventListener("click", () => {
+    closeMoreMenu();
+    exportSheetSummary();
+  });
+  els.importSheetAction.addEventListener("click", () => {
+    closeMoreMenu();
+    importSheetSummary();
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!els.moreMenu.contains(event.target)) closeMoreMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeMoreMenu();
+  });
+  window.addEventListener("hashchange", () => {
+    switchBoardFromUrl();
+  });
+
   wireBoardScrollSync();
 
   els.board.addEventListener("dragover", (event) => {
@@ -241,11 +360,69 @@ function wireEvents() {
   document.addEventListener("wheel", onGlobalWheel, { passive: false, capture: true });
 }
 
+function toggleMoreMenu(event) {
+  event.stopPropagation();
+  const isOpen = !els.moreDropdown.hidden;
+  els.moreDropdown.hidden = isOpen;
+  els.moreBtn.setAttribute("aria-expanded", String(!isOpen));
+}
+
+function closeMoreMenu() {
+  els.moreDropdown.hidden = true;
+  els.moreBtn.setAttribute("aria-expanded", "false");
+}
+
 function render() {
+  renderBoardTitle();
   renderTopStats();
   renderBoard();
   syncTopScrollSize();
   focusPendingTaskInput();
+}
+
+function renderBoardTitle() {
+  const value = state.boardName || "_____";
+  els.boardNameDisplay.textContent = value;
+  document.title = `${value} Board`;
+}
+
+function finishBoardNameEdit() {
+  const next = (els.boardNameDisplay.textContent || "").replace(/\n+/g, " ").trim() || "_____";
+  const previousSlug = currentBoardSlug;
+  state.boardName = next;
+  els.boardNameDisplay.textContent = next;
+  els.boardNameDisplay.contentEditable = "false";
+  els.boardTitleWrap.classList.remove("editing");
+  const nextSlug = ensureUniqueBoardSlug(slugifyBoardName(next), previousSlug);
+  persistBoardUnderSlug(nextSlug, previousSlug);
+  currentBoardSlug = nextSlug;
+  ensureBoardSlugInUrl(nextSlug);
+  renderBoardTitle();
+}
+
+function startBoardNameInlineEdit() {
+  els.boardTitleWrap.classList.add("editing");
+  els.boardNameDisplay.contentEditable = "true";
+  els.boardNameDisplay.focus();
+  const selection = window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(els.boardNameDisplay);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function startNewBoard() {
+  const raw = prompt("Board name", "_____");
+  if (raw == null) return;
+  const name = raw.trim() || "_____";
+  const slug = ensureUniqueBoardSlug(slugifyBoardName(name));
+  const next = makeDefaultState(name);
+  localStorage.setItem(storageKeyFor(slug), JSON.stringify(next));
+  currentBoardSlug = slug;
+  state = next;
+  ensureBoardSlugInUrl(slug);
+  render();
 }
 
 function renderBoard() {
@@ -426,6 +603,8 @@ function taskNode(task, segment) {
   });
 
   preview.addEventListener("click", (event) => {
+    if (event.target.closest("a")) return;
+
     const checkbox = event.target.closest("input[type=\"checkbox\"][data-line-index]");
     if (!checkbox) {
       body.classList.add("editing");
@@ -503,7 +682,7 @@ function renderMarkdownPreview(container, taskId, textarea) {
     if (heading) {
       closeLists();
       const level = heading[1].length;
-      html += `<h${level}>${escapeHtml(heading[2])}</h${level}>`;
+      html += `<h${level}>${renderInlineRichText(heading[2])}</h${level}>`;
       return;
     }
 
@@ -519,7 +698,7 @@ function renderMarkdownPreview(container, taskId, textarea) {
       const checked = (checklist[2] || "").toLowerCase() === "x";
       const checkedAttr = checked ? " checked" : "";
       const checkedClass = checked ? " is-checked" : "";
-      html += `<li class="md-check-item${checkedClass}"><input type="checkbox" data-line-index="${lineIndex}"${checkedAttr}><span>${escapeHtml(checklist[4] || "")}</span></li>`;
+      html += `<li class="md-check-item${checkedClass}"><input type="checkbox" data-line-index="${lineIndex}"${checkedAttr}><span>${renderInlineRichText(checklist[4] || "")}</span></li>`;
       return;
     }
 
@@ -532,7 +711,7 @@ function renderMarkdownPreview(container, taskId, textarea) {
         html += "<ul>";
         inBullet = true;
       }
-      html += `<li>${escapeHtml(bullet[1])}</li>`;
+      html += `<li>${renderInlineRichText(bullet[1])}</li>`;
       return;
     }
 
@@ -542,7 +721,7 @@ function renderMarkdownPreview(container, taskId, textarea) {
       return;
     }
 
-    html += `<p>${escapeHtml(line)}</p>`;
+    html += `<p>${renderInlineRichText(line)}</p>`;
   });
 
   closeLists();
@@ -582,6 +761,28 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll("\"", "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function renderInlineRichText(value) {
+  const source = String(value || "");
+  const urlPattern = /((?:https?:\/\/|www\.)[^\s<]+)/gi;
+
+  let html = "";
+  let cursor = 0;
+
+  source.replace(urlPattern, (raw, match, offset) => {
+    html += escapeHtml(source.slice(cursor, offset));
+
+    const label = escapeHtml(match);
+    const href = match.toLowerCase().startsWith("www.") ? `https://${match}` : match;
+    html += `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+
+    cursor = offset + raw.length;
+    return raw;
+  });
+
+  html += escapeHtml(source.slice(cursor));
+  return html;
 }
 
 function isChecklistLineAtCursor(textarea) {
@@ -1338,6 +1539,245 @@ function exportSheetSummary() {
   a.download = `task-summary-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+function importSheetSummary() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".csv,.tsv,text/csv,text/tab-separated-values";
+  input.addEventListener("change", () => {
+    const file = input.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = typeof reader.result === "string" ? reader.result : "";
+        const result = importRowsIntoBoard(text);
+        if (!result.imported) {
+          alert("No tasks found to import.");
+          return;
+        }
+        saveState();
+        render();
+        alert(`Imported ${result.imported} task${result.imported === 1 ? "" : "s"} across ${result.projects} project${result.projects === 1 ? "" : "s"}.`);
+      } catch {
+        alert("Could not import this sheet.");
+      }
+    };
+    reader.readAsText(file);
+  });
+  input.click();
+}
+
+function importRowsIntoBoard(raw) {
+  const rows = parseSheetRows(raw);
+  if (!rows.length) return { imported: 0, projects: 0 };
+
+  const normalized = rows.map((row) => row.map((cell) => (cell || "").trim()));
+  const parsed = extractImportedTaskRows(normalized);
+  if (!parsed.rows.length) return { imported: 0, projects: 0 };
+
+  const projectByName = new Map(
+    state.projects.map((p) => [p.name.trim().toLowerCase(), p])
+  );
+
+  let imported = 0;
+  const touchedProjects = new Set();
+
+  for (const row of parsed.rows) {
+    const taskText = row.task?.trim() || "";
+    if (!taskText) continue;
+
+    const projectName = (row.project?.trim() || "General");
+    const projectKey = projectName.toLowerCase();
+    let project = projectByName.get(projectKey);
+    if (!project) {
+      const id = makeId();
+      project = { id, name: projectName, view: "todo", width: 1 };
+      state.projects.push(project);
+      state.lists[id] = { todo: [], done: [] };
+      projectByName.set(projectKey, project);
+    }
+
+    const status = normalizeImportedStatus(row.status);
+    const createdAt = parseImportedTimestamp(row.created) ?? currentNow();
+    const updatedAt = parseImportedTimestamp(row.updated) ?? createdAt;
+    const completedAt = status === "done" ? (parseImportedTimestamp(row.completed) ?? updatedAt) : null;
+
+    const id = makeId();
+    state.tasks[id] = {
+      id,
+      text: taskText,
+      projectId: project.id,
+      status,
+      emojis: parseImportedTags(row.tags),
+      createdAt,
+      updatedAt,
+      completedAt
+    };
+
+    state.lists[project.id][status].push(id);
+    touchedProjects.add(project.id);
+    imported += 1;
+  }
+
+  return { imported, projects: touchedProjects.size };
+}
+
+function parseSheetRows(raw) {
+  const text = String(raw || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (!text.trim()) return [];
+  if (text.includes(",") || text.includes("\"")) return parseCsvRows(text);
+  return text.split("\n").map((line) => line.split("\t"));
+}
+
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let value = "";
+  let i = 0;
+  let inQuotes = false;
+
+  while (i < text.length) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === "\"") {
+        if (text[i + 1] === "\"") {
+          value += "\"";
+          i += 2;
+          continue;
+        }
+        inQuotes = false;
+        i += 1;
+        continue;
+      }
+      value += ch;
+      i += 1;
+      continue;
+    }
+
+    if (ch === "\"") {
+      inQuotes = true;
+      i += 1;
+      continue;
+    }
+    if (ch === ",") {
+      row.push(value);
+      value = "";
+      i += 1;
+      continue;
+    }
+    if (ch === "\n") {
+      row.push(value);
+      rows.push(row);
+      row = [];
+      value = "";
+      i += 1;
+      continue;
+    }
+
+    value += ch;
+    i += 1;
+  }
+
+  if (value.length || row.length) {
+    row.push(value);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function extractImportedTaskRows(rows) {
+  const headerIndex = findTaskHeaderRow(rows);
+  if (headerIndex >= 0) {
+    const map = mapHeaderIndices(rows[headerIndex]);
+    const out = [];
+    for (let i = headerIndex + 1; i < rows.length; i += 1) {
+      const rec = mapImportedRow(rows[i], map);
+      if (!rec.task) continue;
+      out.push(rec);
+    }
+    return { rows: out };
+  }
+
+  const guess = [];
+  for (const raw of rows) {
+    if (!raw.some((v) => v && v.trim())) continue;
+    const task = raw[0]?.trim() || "";
+    if (!task) continue;
+    guess.push({
+      task,
+      project: raw[1]?.trim() || "General",
+      status: raw[2]?.trim() || "todo",
+      tags: raw[3]?.trim() || "",
+      created: raw[4]?.trim() || "",
+      updated: raw[5]?.trim() || "",
+      completed: raw[6]?.trim() || ""
+    });
+  }
+  return { rows: guess };
+}
+
+function findTaskHeaderRow(rows) {
+  for (let i = 0; i < rows.length; i += 1) {
+    const map = mapHeaderIndices(rows[i]);
+    if (map.task >= 0) return i;
+  }
+  return -1;
+}
+
+function mapHeaderIndices(headerRow) {
+  const headers = headerRow.map((h) => String(h || "").trim().toLowerCase());
+  const byAny = (terms) => headers.findIndex((h) => terms.some((t) => h === t || h.includes(t)));
+  return {
+    project: byAny(["project", "board", "list"]),
+    status: byAny(["status", "state"]),
+    task: byAny(["task", "title", "item", "description", "text"]),
+    tags: byAny(["tags", "tag", "emoji", "emojis", "labels"]),
+    created: byAny(["created", "created at", "added"]),
+    updated: byAny(["updated", "updated at", "modified"]),
+    completed: byAny(["completed", "closed", "done at", "finished"])
+  };
+}
+
+function mapImportedRow(row, map) {
+  const at = (idx) => (idx >= 0 ? row[idx] : "");
+  return {
+    project: String(at(map.project) || ""),
+    status: String(at(map.status) || ""),
+    task: String(at(map.task) || ""),
+    tags: String(at(map.tags) || ""),
+    created: String(at(map.created) || ""),
+    updated: String(at(map.updated) || ""),
+    completed: String(at(map.completed) || "")
+  };
+}
+
+function normalizeImportedStatus(raw) {
+  const text = String(raw || "").trim().toLowerCase();
+  if (!text) return "todo";
+  if (text === "done" || text === "completed" || text === "closed" || text === "complete") return "done";
+  if (text === "todo" || text === "to do" || text === "open" || text === "active") return "todo";
+  if (text === "1" || text === "true" || text === "yes") return "done";
+  return "todo";
+}
+
+function parseImportedTags(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return [];
+  return text
+    .split(/\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function parseImportedTimestamp(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+  const ts = Date.parse(text);
+  return Number.isFinite(ts) ? ts : null;
 }
 
 function buildReportData() {
