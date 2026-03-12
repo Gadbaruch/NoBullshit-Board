@@ -22,7 +22,10 @@
 body {
   margin: 0;
   font-family: "Trebuchet MS", "Avenir Next", sans-serif;
-  background: linear-gradient(145deg, #11151f 0%, #171d2e 38%, #1b2233 65%, #161d2c 100%);
+  background:
+    radial-gradient(1200px 700px at 8% -10%, rgba(86, 126, 255, 0.2) 0%, rgba(86, 126, 255, 0) 60%),
+    radial-gradient(1000px 620px at 95% 8%, rgba(255, 94, 143, 0.14) 0%, rgba(255, 94, 143, 0) 58%),
+    linear-gradient(155deg, #0d1120 0%, #121931 42%, #151f3a 72%, #0f162c 100%);
   background-attachment: fixed;
   color: var(--ink);
 }
