@@ -16,14 +16,12 @@
           </div>
           <p>Multiproject Miniban</p>
         </div>
-        <div class="global-summary">
-          <div id="globalPie" class="global-pie"></div>
-          <div id="globalStatsText" class="global-stats-text"></div>
-        </div>
+        <div id="globalStatsText" class="global-stats-text global-summary"></div>
         <div id="moreMenu" class="more-menu">
           <button id="moreBtn" class="more-btn" type="button" aria-label="Menu" aria-expanded="false">⋯</button>
           <div id="moreDropdown" class="more-dropdown" hidden>
             <button id="newBoardAction" type="button">Start new board</button>
+            <button id="recoverBoardAction" type="button">Recover board data</button>
             <button id="exportPdfAction" type="button">Export PDF summary</button>
             <button id="exportSheetAction" type="button">Export sheet</button>
             <button id="importSheetAction" type="button">Import sheet</button>
@@ -37,6 +35,7 @@
       <div id="boardTopScroll" class="board-top-scroll" aria-hidden="true">
         <div id="boardTopScrollInner" class="board-top-scroll-inner"></div>
       </div>
+      <div id="taskSelectionBox" class="task-selection-box" hidden></div>
       <section id="board" class="board" aria-live="polite"></section>
     </section>
   </main>
@@ -45,18 +44,23 @@
     <article class="project" data-project-id="" draggable="true">
       <div class="resize-handle left" aria-hidden="true"></div>
       <div class="resize-handle right" aria-hidden="true"></div>
+      <input class="project-color-input" type="color" aria-label="Project color" />
       <div class="project-head">
         <div class="project-head-left">
-          <div class="project-pie"></div>
           <div class="project-title-wrap">
             <h2 class="project-title" title="Click to rename"></h2>
             <input class="project-title-input" type="text" />
+            <button class="project-color-btn" type="button" aria-label="Project color">🎨</button>
           </div>
         </div>
         <div class="project-actions">
           <button class="archive-btn" type="button">Archive</button>
           <button class="list-toggle" type="button"></button>
         </div>
+      </div>
+      <div class="project-goal-wrap">
+        <p class="project-goal" title="Click to edit goal"></p>
+        <textarea class="project-goal-input" rows="2" placeholder="project goal"></textarea>
       </div>
       <button class="task-add-strip" type="button" aria-label="Add task"></button>
       <div class="dropzone" data-status="todo"></div>
@@ -66,13 +70,18 @@
   <template id="taskTemplate">
     <div class="task" draggable="true" data-id="">
       <div class="task-body">
-        <div class="task-tags"></div>
+        <div class="task-meta">
+          <div class="task-tags"></div>
+          <div class="task-deadline"></div>
+        </div>
         <textarea class="task-text" placeholder="new task"></textarea>
         <div class="task-preview"></div>
       </div>
       <div class="task-side">
         <button class="done-btn" type="button" aria-label="Toggle done">✓</button>
         <button class="emoji-btn" type="button" aria-label="Add emoji">🙂</button>
+        <button class="deadline-btn" type="button" aria-label="Set deadline">📅</button>
+        <input class="deadline-input" type="datetime-local" />
       </div>
     </div>
   </template>

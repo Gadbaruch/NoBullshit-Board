@@ -14,12 +14,13 @@ const els = {
   board: document.getElementById("board"),
   boardTopScroll: document.getElementById("boardTopScroll"),
   boardTopScrollInner: document.getElementById("boardTopScrollInner"),
-  globalPie: document.getElementById("globalPie"),
+  taskSelectionBox: document.getElementById("taskSelectionBox"),
   globalStatsText: document.getElementById("globalStatsText"),
   moreMenu: document.getElementById("moreMenu"),
   moreBtn: document.getElementById("moreBtn"),
   moreDropdown: document.getElementById("moreDropdown"),
   newBoardAction: document.getElementById("newBoardAction"),
+  recoverBoardAction: document.getElementById("recoverBoardAction"),
   exportPdfAction: document.getElementById("exportPdfAction"),
   exportSheetAction: document.getElementById("exportSheetAction"),
   importSheetAction: document.getElementById("importSheetAction"),
@@ -37,6 +38,10 @@ let taskPlaceholder = null;
 let projectPlaceholder = null;
 let resizeState = null;
 let openEmojiMenu = null;
+let taskSelection = new Set();
+let lastSelectedTaskId = null;
+let marqueeState = null;
+let taskDragPreview = null;
 const QUICK_EMOJIS = ["😀", "😅", "😍", "🤩", "🔥", "✅", "🚀", "🎯", "🧠", "📌", "📅", "💡", "🛠️", "🧹", "🧩", "🎵", "💰", "📞"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -78,7 +83,7 @@ function makeDefaultState(boardName = "_____") {
   return {
     version: 7,
     boardName: boardName.trim() || "_____",
-    projects: [{ id, name: "General", view: "todo", width: 1 }],
+    projects: [{ id, name: "General", goal: "", color: "", view: "todo", width: 1 }],
     tasks: {},
     lists: {
       [id]: { todo: [], done: [] }
@@ -96,6 +101,8 @@ function normalizeState(parsed) {
     .map((p) => ({
       id: p.id,
       name: p.name.trim(),
+      goal: typeof p.goal === "string" ? p.goal.trim() : "",
+      color: typeof p.color === "string" ? p.color.trim() : "",
       view: p.view === "done" ? "done" : "todo",
       width: clampProjectWidth(Number.isFinite(p.width) ? p.width : 1)
     }))
@@ -118,6 +125,7 @@ function normalizeState(parsed) {
       projectId: t.projectId,
       status: t.status === "done" ? "done" : "todo",
       emojis: Array.isArray(t.emojis) ? t.emojis.filter((e) => typeof e === "string").slice(0, 12) : [],
+      deadlineAt: normalizeTimestamp(t.deadlineAt),
       createdAt,
       updatedAt,
       completedAt: t.status === "done" ? completedAt ?? updatedAt : null
@@ -153,11 +161,13 @@ function normalizeAnyLegacy(parsed) {
   if (typeof parsed.tasks === "object" && typeof parsed.lists === "object") {
     const projects = parsed.projects.map((p) => {
       if (typeof p === "string") {
-        return { id: makeId(), name: p, view: "todo", width: 1 };
+        return { id: makeId(), name: p, goal: "", color: "", view: "todo", width: 1 };
       }
       return {
         id: p.id,
         name: p.name,
+        goal: typeof p.goal === "string" ? p.goal : "",
+        color: typeof p.color === "string" ? p.color : "",
         view: p.view === "done" ? "done" : "todo",
         width: clampProjectWidth(Number.isFinite(p.width) ? p.width : 1)
       };
@@ -169,7 +179,7 @@ function normalizeAnyLegacy(parsed) {
   const names = parsed.projects.filter((n) => typeof n === "string" && n.trim()).map((n) => n.trim());
   const uniqueNames = [...new Set(names.length ? names : ["General"])];
 
-  const projects = uniqueNames.map((name) => ({ id: makeId(), name, view: "todo", width: 1 }));
+  const projects = uniqueNames.map((name) => ({ id: makeId(), name, goal: "", color: "", view: "todo", width: 1 }));
   const byName = Object.fromEntries(projects.map((p) => [p.name, p.id]));
   const tasks = {};
   const lists = Object.fromEntries(projects.map((p) => [p.id, { todo: [], done: [] }]));
@@ -182,7 +192,7 @@ function normalizeAnyLegacy(parsed) {
     let projectId = byName[projectName];
 
     if (!projectId) {
-      const p = { id: makeId(), name: projectName, view: "todo", width: 1 };
+      const p = { id: makeId(), name: projectName, goal: "", color: "", view: "todo", width: 1 };
       projects.push(p);
       byName[p.name] = p.id;
       lists[p.id] = { todo: [], done: [] };
@@ -198,6 +208,7 @@ function normalizeAnyLegacy(parsed) {
       projectId,
       status,
       emojis: [],
+      deadlineAt: null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
       completedAt: status === "done" ? Date.now() : null
@@ -297,6 +308,10 @@ function wireEvents() {
     closeMoreMenu();
     startNewBoard();
   });
+  els.recoverBoardAction.addEventListener("click", () => {
+    closeMoreMenu();
+    recoverBoardData();
+  });
   els.exportPdfAction.addEventListener("click", () => {
     closeMoreMenu();
     exportPdfSummary();
@@ -337,6 +352,8 @@ function wireEvents() {
     clearDragState();
   });
 
+  els.board.addEventListener("pointerdown", startTaskMarqueeSelection);
+
   els.projectTrash.addEventListener("dragover", (event) => {
     if (!dragProjectId && !dragTaskId) return;
     event.preventDefault();
@@ -352,7 +369,7 @@ function wireEvents() {
     els.projectTrash.classList.remove("over");
 
     if (dragProjectId) deleteProject(dragProjectId);
-    if (dragTaskId) deleteTask(dragTaskId);
+    if (dragTaskId) deleteSelectedOrSingleTask(dragTaskId);
 
     clearDragState();
   });
@@ -373,6 +390,8 @@ function closeMoreMenu() {
 }
 
 function render() {
+  taskSelection = new Set([...taskSelection].filter((id) => state.tasks[id]));
+  if (lastSelectedTaskId && !state.tasks[lastSelectedTaskId]) lastSelectedTaskId = null;
   renderBoardTitle();
   renderTopStats();
   renderBoard();
@@ -425,24 +444,102 @@ function startNewBoard() {
   render();
 }
 
+function recoverBoardData() {
+  const snapshots = getSavedBoardSnapshots().filter((entry) => entry.slug !== currentBoardSlug);
+  if (!snapshots.length) {
+    alert("No other saved board snapshots found in this browser.");
+    return;
+  }
+
+  const message = snapshots
+    .map((entry, index) => `${index + 1}. ${entry.boardName}  [${entry.slug}]  ${entry.projects} projects / ${entry.tasks} tasks`)
+    .join("\n");
+
+  const raw = prompt(`Recover which saved board?\n\n${message}\n\nType number or slug:`);
+  if (raw == null) return;
+
+  const input = raw.trim().toLowerCase();
+  if (!input) return;
+
+  const byIndex = Number(input);
+  const match = Number.isInteger(byIndex) && byIndex >= 1 && byIndex <= snapshots.length
+    ? snapshots[byIndex - 1]
+    : snapshots.find((entry) => entry.slug.toLowerCase() === input);
+
+  if (!match) {
+    alert("Could not find that saved board.");
+    return;
+  }
+
+  currentBoardSlug = match.slug;
+  state = loadState(currentBoardSlug);
+  ensureBoardSlugInUrl(currentBoardSlug);
+  render();
+}
+
+function getSavedBoardSnapshots() {
+  const out = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith(`${STORAGE_NAMESPACE}::`)) continue;
+
+    const slug = key.slice(STORAGE_NAMESPACE.length + 2);
+    const raw = localStorage.getItem(key);
+    if (!raw) continue;
+
+    try {
+      const parsed = normalizeState(JSON.parse(raw));
+      if (!parsed) continue;
+      out.push({
+        slug,
+        boardName: parsed.boardName || slugToBoardName(slug),
+        projects: parsed.projects.length,
+        tasks: Object.keys(parsed.tasks || {}).length
+      });
+    } catch {
+      // ignore broken entry
+    }
+  }
+
+  return out.sort((a, b) => a.boardName.localeCompare(b.boardName) || a.slug.localeCompare(b.slug));
+}
+
 function renderBoard() {
   els.board.innerHTML = "";
 
   for (const project of state.projects) {
     const node = els.projectTemplate.content.firstElementChild.cloneNode(true);
     node.dataset.projectId = project.id;
-    node.style.setProperty("--project-bg", projectColor(project.id));
+    node.style.setProperty("--project-bg", projectColor(project));
     node.style.setProperty("--project-width", String(clampProjectWidth(project.width ?? 1)));
 
     const titleWrap = node.querySelector(".project-title-wrap");
     const title = node.querySelector(".project-title");
     const titleInput = node.querySelector(".project-title-input");
+    const colorBtn = node.querySelector(".project-color-btn");
+    const goalWrap = node.querySelector(".project-goal-wrap");
+    const goal = node.querySelector(".project-goal");
+    const goalInput = node.querySelector(".project-goal-input");
+    const colorInput = node.querySelector(".project-color-input");
     title.textContent = project.name;
     titleInput.value = project.name;
+    goal.textContent = project.goal || "";
+    goalInput.value = project.goal || "";
+    colorInput.value = normalizeColorHex(project.color || projectColor(project));
     title.addEventListener("click", () => {
       titleWrap.classList.add("editing");
       titleInput.focus();
       titleInput.select();
+    });
+    colorBtn.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    colorBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof colorInput.showPicker === "function") colorInput.showPicker();
+      else colorInput.click();
     });
     titleInput.addEventListener("blur", () => {
       finishProjectTitleEdit(project.id, titleWrap, title, titleInput);
@@ -456,6 +553,33 @@ function renderBoard() {
         titleInput.value = project.name;
         titleWrap.classList.remove("editing");
       }
+    });
+    goal.addEventListener("click", () => {
+      goalWrap.classList.add("editing");
+      goalInput.focus();
+      goalInput.select();
+    });
+    goalInput.addEventListener("blur", () => {
+      finishProjectGoalEdit(project.id, goalWrap, goal, goalInput);
+    });
+    goalInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        finishProjectGoalEdit(project.id, goalWrap, goal, goalInput);
+      }
+      if (event.key === "Escape") {
+        goalInput.value = project.goal || "";
+        goalWrap.classList.remove("editing");
+      }
+    });
+    colorInput.addEventListener("input", () => {
+      project.color = colorInput.value;
+      node.style.setProperty("--project-bg", projectColor(project));
+    });
+    colorInput.addEventListener("change", () => {
+      project.color = colorInput.value;
+      saveState();
+      render();
     });
 
     node.addEventListener("dragstart", (event) => {
@@ -495,8 +619,6 @@ function renderBoard() {
 
     const zone = node.querySelector(".dropzone");
     zone.dataset.status = project.view;
-    paintProjectPie(node.querySelector(".project-pie"), project.id);
-
     const list = state.lists[project.id][project.view];
     if (project.view === "todo") {
       drawTodoList(zone, list);
@@ -556,20 +678,29 @@ function taskNode(task, segment) {
   node.dataset.id = task.id;
   node.dataset.status = task.status;
   node.dataset.segment = segment;
+  if (taskSelection.has(task.id)) node.classList.add("selected");
   const closedLabel = task.completedAt ? `Closed ${formatTaskCreated(task.completedAt)}` : "";
   const createdLabel = task.createdAt ? `Created ${formatTaskCreated(task.createdAt)}` : "";
   node.dataset.createdLabel = task.status === "done" ? closedLabel : createdLabel;
   applyTaskAgeVisual(node, task, segment);
 
   const body = node.querySelector(".task-body");
+  const deadlineEl = node.querySelector(".task-deadline");
   const tags = node.querySelector(".task-tags");
   const input = node.querySelector(".task-text");
   const preview = node.querySelector(".task-preview");
+  const deadlineBtn = node.querySelector(".deadline-btn");
+  const deadlineInput = node.querySelector(".deadline-input");
   input.value = task.text;
   autoSizeTextarea(input);
   renderMarkdownPreview(preview, task.id, input);
   renderTaskTags(tags, task.id);
-  if (task.text.trim() === "") body.classList.add("editing");
+  if (task.text.trim() === "") {
+    body.classList.add("editing");
+    renderTaskDeadline(deadlineEl, task.id, true);
+  } else {
+    renderTaskDeadline(deadlineEl, task.id, false);
+  }
 
   input.addEventListener("input", () => {
     state.tasks[task.id].text = input.value;
@@ -581,11 +712,15 @@ function taskNode(task, segment) {
 
   input.addEventListener("focus", () => {
     body.classList.add("editing");
+    node.classList.add("editing-text");
+    renderTaskDeadline(deadlineEl, task.id, true);
     autoSizeTextarea(input);
   });
 
   input.addEventListener("blur", () => {
     body.classList.remove("editing");
+    node.classList.remove("editing-text");
+    renderTaskDeadline(deadlineEl, task.id, false);
     renderMarkdownPreview(preview, task.id, input);
   });
 
@@ -603,11 +738,18 @@ function taskNode(task, segment) {
   });
 
   preview.addEventListener("click", (event) => {
+    if (event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      handleTaskShiftSelection(task.id);
+      return;
+    }
     if (event.target.closest("a")) return;
 
     const checkbox = event.target.closest("input[type=\"checkbox\"][data-line-index]");
     if (!checkbox) {
       body.classList.add("editing");
+      node.classList.add("editing-text");
       autoSizeTextarea(input);
       input.focus();
       return;
@@ -627,6 +769,14 @@ function taskNode(task, segment) {
   doneBtn.textContent = "";
   doneBtn.addEventListener("click", () => handleDoneClick(task.id, doneBtn));
 
+  node.addEventListener("click", (event) => {
+    if (!event.shiftKey) return;
+    if (event.target.closest("button, input, textarea, a, .emoji-menu")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    handleTaskShiftSelection(task.id);
+  });
+
   const emojiBtn = node.querySelector(".emoji-btn");
   emojiBtn.addEventListener("mousedown", (event) => {
     event.preventDefault();
@@ -636,11 +786,66 @@ function taskNode(task, segment) {
     toggleEmojiMenu(emojiBtn, input, body, preview, tags, task.id);
   });
 
-  node.addEventListener("dragstart", () => {
+  deadlineBtn.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+  });
+  deadlineBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openDeadlinePicker(deadlineInput, task.id);
+  });
+
+  deadlineInput.addEventListener("change", () => {
+    setTaskDeadline(task.id, deadlineInput.value);
+    renderTaskDeadline(deadlineEl, task.id, true);
+    saveState();
+    body.classList.add("editing");
+    input.focus();
+  });
+
+  deadlineInput.addEventListener("mousedown", (event) => {
+    event.stopPropagation();
+  });
+
+  deadlineEl.addEventListener("mousedown", (event) => {
+    if (!body.classList.contains("editing")) return;
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  deadlineEl.addEventListener("click", (event) => {
+    if (!body.classList.contains("editing")) return;
+    event.stopPropagation();
+
+    if (event.target.closest(".task-deadline-clear")) {
+      clearTaskDeadline(task.id);
+      renderTaskDeadline(deadlineEl, task.id, true);
+      saveState();
+      input.focus();
+      return;
+    }
+
+    openDeadlinePicker(deadlineInput, task.id);
+  });
+
+  node.addEventListener("dragstart", (event) => {
+    if (!taskSelection.has(task.id)) {
+      taskSelection = new Set([task.id]);
+      lastSelectedTaskId = task.id;
+      syncTaskSelectionClasses();
+    }
+    const draggedNodes = [node, ...getDraggedTaskNodes(task.id).filter((taskNode) => taskNode !== node)];
+    draggedNodes.forEach((taskNode, index) => {
+      taskNode.style.setProperty("--drag-stack-index", String(index));
+      taskNode.style.setProperty("--drag-stack-total", String(draggedNodes.length));
+    });
     dragTaskId = task.id;
+    attachTaskDragPreview(event, draggedNodes, node);
     node.classList.add("dragging");
+    draggedNodes.forEach((taskNode) => {
+      if (taskNode !== node) taskNode.classList.add("dragging-buddy");
+    });
     document.body.classList.add("is-dragging");
-    createTaskPlaceholder(node);
+    createTaskPlaceholder(node, draggedNodes);
   });
 
   node.addEventListener("dragend", () => {
@@ -820,6 +1025,7 @@ function addEmptyTask(projectId) {
     projectId,
     status: "todo",
     emojis: [],
+    deadlineAt: null,
     createdAt: currentNow(),
     updatedAt: currentNow(),
     completedAt: null
@@ -839,14 +1045,16 @@ function handleDoneClick(taskId, buttonEl) {
   const task = state.tasks[taskId];
   if (!task) return;
 
+  const targetIds = getBulkActionTaskIds(taskId);
+
   if (task.status === "todo") {
     buttonEl.classList.add("complete-pop");
     launchConfetti(buttonEl);
-    setTimeout(() => toggleDone(taskId), 180);
+    setTimeout(() => applyDoneState(targetIds, "done"), 180);
     return;
   }
 
-  toggleDone(taskId);
+  applyDoneState(targetIds, "todo");
 }
 
 function toggleDone(taskId) {
@@ -859,6 +1067,25 @@ function toggleDone(taskId) {
   task.completedAt = task.status === "done" ? currentNow() : null;
   state.lists[task.projectId][task.status].unshift(taskId);
 
+  saveState();
+  render();
+}
+
+function applyDoneState(taskIds, targetStatus) {
+  const ids = [...new Set(taskIds)].filter((id) => state.tasks[id]);
+  if (!ids.length) return;
+
+  for (const taskId of ids) {
+    const task = state.tasks[taskId];
+    if (!task || task.status === targetStatus) continue;
+    removeFromList(task.projectId, task.status, taskId);
+    task.status = targetStatus;
+    task.updatedAt = currentNow();
+    task.completedAt = targetStatus === "done" ? currentNow() : null;
+    state.lists[task.projectId][targetStatus].unshift(taskId);
+  }
+
+  taskSelection = new Set(ids);
   saveState();
   render();
 }
@@ -888,6 +1115,20 @@ function deleteTask(taskId) {
   render();
 }
 
+function deleteSelectedOrSingleTask(taskId) {
+  const ids = getBulkActionTaskIds(taskId);
+  ids.forEach((id) => {
+    const task = state.tasks[id];
+    if (!task) return;
+    removeFromList(task.projectId, task.status, id);
+    delete state.tasks[id];
+  });
+  taskSelection = new Set();
+  lastSelectedTaskId = null;
+  saveState();
+  render();
+}
+
 function createProject() {
   const raw = prompt("Project name");
   if (raw == null) return;
@@ -899,7 +1140,7 @@ function createProject() {
   if (dupe) return;
 
   const id = makeId();
-  state.projects.push({ id, name, view: "todo", width: 1 });
+  state.projects.push({ id, name, goal: "", color: "", view: "todo", width: 1 });
   state.lists[id] = { todo: [], done: [] };
 
   saveState();
@@ -959,20 +1200,23 @@ function setupTaskDropzone(zone, projectId, status) {
     event.preventDefault();
     zone.classList.remove("over");
 
-    const taskId = dragTaskId;
-    if (!taskId) return;
-
-    const task = state.tasks[taskId];
-    if (!task) return;
-
-    removeFromList(task.projectId, task.status, taskId);
-    task.projectId = projectId;
-    task.status = status;
-
     const list = state.lists[projectId][status];
     const index = getTaskPlaceholderIndex(zone);
-    list.splice(Math.max(0, Math.min(index, list.length)), 0, taskId);
+    const taskIds = getDraggedTaskIds();
+    if (!taskIds.length) return;
 
+    taskIds.forEach((taskId) => {
+      const task = state.tasks[taskId];
+      if (!task) return;
+      removeFromList(task.projectId, task.status, taskId);
+      task.projectId = projectId;
+      task.status = status;
+      task.updatedAt = currentNow();
+    });
+
+    list.splice(Math.max(0, Math.min(index, list.length)), 0, ...taskIds);
+
+    taskSelection = new Set(taskIds);
     saveState();
     render();
     clearDragState();
@@ -1046,20 +1290,26 @@ function getProjectPlaceholderIndex() {
   return state.projects.length;
 }
 
-function createTaskPlaceholder(taskNode) {
+function createTaskPlaceholder(taskNode, draggedNodes = [taskNode]) {
   if (!taskPlaceholder) {
     taskPlaceholder = document.createElement("div");
     taskPlaceholder.className = "task-placeholder";
   }
 
-  taskPlaceholder.style.height = `${Math.max(58, taskNode.getBoundingClientRect().height)}px`;
+  const totalHeight = draggedNodes.reduce((sum, node) => {
+    const box = node.getBoundingClientRect();
+    return sum + Math.max(58, box.height);
+  }, 0);
+  taskPlaceholder.style.height = `${Math.max(58, totalHeight + Math.max(0, draggedNodes.length - 1) * 8)}px`;
   taskNode.insertAdjacentElement("afterend", taskPlaceholder);
 }
 
 function moveTaskPlaceholder(zone, y) {
   if (!taskPlaceholder) return;
 
-  const cards = [...zone.querySelectorAll(".task")].filter((card) => !card.classList.contains("dragging"));
+  const cards = [...zone.querySelectorAll(".task")].filter(
+    (card) => !card.classList.contains("dragging") && !card.classList.contains("dragging-buddy")
+  );
   let before = null;
 
   for (const card of cards) {
@@ -1080,7 +1330,7 @@ function getTaskPlaceholderIndex(zone) {
   let index = 0;
   for (const child of zone.children) {
     if (child === taskPlaceholder) return index;
-    if (child.classList.contains("task") && !child.classList.contains("dragging")) index += 1;
+    if (child.classList.contains("task") && !child.classList.contains("dragging") && !child.classList.contains("dragging-buddy")) index += 1;
   }
   return index;
 }
@@ -1111,10 +1361,189 @@ function clearDragState() {
   els.projectTrash.classList.remove("over");
   document.querySelectorAll(".dropzone.over").forEach((z) => z.classList.remove("over"));
   document.querySelectorAll(".project.dragging").forEach((p) => p.classList.remove("dragging"));
-  document.querySelectorAll(".task.dragging").forEach((t) => t.classList.remove("dragging"));
+  document.querySelectorAll(".task.dragging").forEach((t) => {
+    t.classList.remove("dragging");
+    t.style.removeProperty("--drag-stack-index");
+    t.style.removeProperty("--drag-stack-total");
+  });
+  document.querySelectorAll(".task.dragging-buddy").forEach((t) => {
+    t.classList.remove("dragging-buddy");
+    t.style.removeProperty("--drag-stack-index");
+    t.style.removeProperty("--drag-stack-total");
+  });
+  if (taskDragPreview) {
+    taskDragPreview.remove();
+    taskDragPreview = null;
+  }
   if (projectPlaceholder) projectPlaceholder.remove();
   if (taskPlaceholder) taskPlaceholder.remove();
   closeEmojiMenu();
+  stopTaskMarqueeSelection();
+}
+
+function getRenderedTaskIds() {
+  return [...els.board.querySelectorAll(".task[data-id]")].map((node) => node.dataset.id).filter(Boolean);
+}
+
+function getBulkActionTaskIds(taskId) {
+  if (taskSelection.has(taskId) && taskSelection.size > 1) {
+    return getOrderedSelectedTaskIds();
+  }
+  return [taskId];
+}
+
+function getOrderedSelectedTaskIds() {
+  const rendered = getRenderedTaskIds();
+  const ordered = rendered.filter((id) => taskSelection.has(id));
+  if (ordered.length) return ordered;
+  return [...taskSelection].filter((id) => state.tasks[id]);
+}
+
+function getDraggedTaskIds() {
+  if (!dragTaskId) return [];
+  return getBulkActionTaskIds(dragTaskId).filter((id) => state.tasks[id]);
+}
+
+function getDraggedTaskNodes(taskId) {
+  const ids = getBulkActionTaskIds(taskId);
+  return ids
+    .map((id) => els.board.querySelector(`.task[data-id="${id}"]`))
+    .filter(Boolean);
+}
+
+function attachTaskDragPreview(event, draggedNodes, sourceNode) {
+  if (!event.dataTransfer || !draggedNodes.length) return;
+  if (taskDragPreview) taskDragPreview.remove();
+
+  const sourceRect = sourceNode.getBoundingClientRect();
+  const preview = document.createElement("div");
+  preview.className = "task-drag-preview";
+
+  draggedNodes.slice(0, 4).forEach((taskNode, index) => {
+    const clone = taskNode.cloneNode(true);
+    clone.classList.remove("selected", "dragging", "dragging-buddy", "editing-text");
+    clone.classList.add("task-drag-preview-card");
+    clone.style.setProperty("--drag-stack-index", String(index));
+    clone.style.width = `${sourceRect.width}px`;
+    preview.append(clone);
+  });
+
+  preview.style.left = "-9999px";
+  preview.style.top = "-9999px";
+  document.body.append(preview);
+  taskDragPreview = preview;
+
+  const offsetX = Math.min(36, Math.max(12, event.clientX - sourceRect.left));
+  const offsetY = Math.min(28, Math.max(12, event.clientY - sourceRect.top));
+  event.dataTransfer.setDragImage(preview, offsetX, offsetY);
+}
+
+function handleTaskShiftSelection(taskId) {
+  const rendered = getRenderedTaskIds();
+  if (!rendered.includes(taskId)) return;
+
+  if (!lastSelectedTaskId || !rendered.includes(lastSelectedTaskId)) {
+    taskSelection.add(taskId);
+    lastSelectedTaskId = taskId;
+    render();
+    return;
+  }
+
+  const start = rendered.indexOf(lastSelectedTaskId);
+  const end = rendered.indexOf(taskId);
+  const [from, to] = start < end ? [start, end] : [end, start];
+  for (let i = from; i <= to; i += 1) {
+    taskSelection.add(rendered[i]);
+  }
+  lastSelectedTaskId = taskId;
+  render();
+}
+
+function startTaskMarqueeSelection(event) {
+  if (event.button !== 0) return;
+  if (dragProjectId || dragTaskId || resizeState) return;
+  if (event.target.closest(".task, button, input, textarea, a, .more-menu, .project-title-wrap, .project-goal-wrap")) return;
+  if (!event.target.closest(".project, .board")) return;
+
+  marqueeState = {
+    startX: event.clientX,
+    startY: event.clientY,
+    additive: event.shiftKey,
+    active: false,
+    baseSelection: new Set(event.shiftKey ? taskSelection : [])
+  };
+
+  window.addEventListener("pointermove", onTaskMarqueeMove);
+  window.addEventListener("pointerup", onTaskMarqueeEnd, { once: true });
+}
+
+function onTaskMarqueeMove(event) {
+  if (!marqueeState) return;
+  const dx = event.clientX - marqueeState.startX;
+  const dy = event.clientY - marqueeState.startY;
+  if (!marqueeState.active && Math.hypot(dx, dy) < 6) return;
+
+  marqueeState.active = true;
+  els.taskSelectionBox.hidden = false;
+  const rect = normalizeMarqueeRect(marqueeState.startX, marqueeState.startY, event.clientX, event.clientY);
+  paintTaskSelectionBox(rect);
+  updateTaskSelectionFromRect(rect, marqueeState.baseSelection);
+}
+
+function onTaskMarqueeEnd() {
+  if (!marqueeState) return;
+  if (!marqueeState.active && !marqueeState.additive) {
+    taskSelection = new Set();
+    lastSelectedTaskId = null;
+    render();
+  }
+  stopTaskMarqueeSelection();
+}
+
+function stopTaskMarqueeSelection() {
+  marqueeState = null;
+  els.taskSelectionBox.hidden = true;
+  window.removeEventListener("pointermove", onTaskMarqueeMove);
+  window.removeEventListener("pointerup", onTaskMarqueeEnd);
+}
+
+function normalizeMarqueeRect(x1, y1, x2, y2) {
+  return {
+    left: Math.min(x1, x2),
+    top: Math.min(y1, y2),
+    right: Math.max(x1, x2),
+    bottom: Math.max(y1, y2)
+  };
+}
+
+function paintTaskSelectionBox(rect) {
+  els.taskSelectionBox.style.left = `${rect.left}px`;
+  els.taskSelectionBox.style.top = `${rect.top}px`;
+  els.taskSelectionBox.style.width = `${Math.max(1, rect.right - rect.left)}px`;
+  els.taskSelectionBox.style.height = `${Math.max(1, rect.bottom - rect.top)}px`;
+}
+
+function updateTaskSelectionFromRect(rect, baseSelection) {
+  const next = new Set(baseSelection);
+  const nodes = [...els.board.querySelectorAll(".task[data-id]")];
+  for (const node of nodes) {
+    const box = node.getBoundingClientRect();
+    const intersects = rect.right >= box.left && rect.left <= box.right && rect.bottom >= box.top && rect.top <= box.bottom;
+    if (intersects) next.add(node.dataset.id);
+  }
+  taskSelection = next;
+  if (taskSelection.size) {
+    lastSelectedTaskId = [...taskSelection].at(-1) || lastSelectedTaskId;
+  }
+  syncTaskSelectionClasses();
+}
+
+function syncTaskSelectionClasses() {
+  els.board.querySelectorAll(".task.selected").forEach((node) => node.classList.remove("selected"));
+  taskSelection.forEach((id) => {
+    const node = els.board.querySelector(`.task[data-id="${id}"]`);
+    node?.classList.add("selected");
+  });
 }
 
 function currentNow() {
@@ -1123,50 +1552,7 @@ function currentNow() {
 
 function renderTopStats() {
   const report = buildReportData();
-  const total = report.total || 1;
-  const donePct = (report.done / total) * 100;
-  const todoPct = (report.todo / total) * 100;
-  const red = getComputedStyle(document.documentElement).getPropertyValue("--high").trim() || "#ff5d7d";
-  const green = getComputedStyle(document.documentElement).getPropertyValue("--low-pie").trim() || "#36a879";
-  const todoEnd = todoPct.toFixed(2);
-  const doneEnd = (todoPct + donePct).toFixed(2);
-  els.globalPie.style.background = `radial-gradient(circle at 28% 22%, rgba(255,255,255,0.26), rgba(255,255,255,0) 46%), conic-gradient(from -90deg, ${red} 0 ${todoEnd}%, ${green} ${todoEnd}% ${doneEnd}%, rgba(255,255,255,0.14) ${doneEnd}% 100%)`;
   els.globalStatsText.textContent = `${report.done}/${report.total} done • ${(report.completionRate * 100).toFixed(1)}% • ${report.doneLast7d} done in 7d`;
-}
-
-function paintProjectPie(el, projectId) {
-  if (!el) return;
-  const stats = getProjectSliceCounts(projectId);
-  const total = Math.max(1, stats.done + stats.high + stats.mid + stats.low);
-  const highPct = (stats.high / total) * 100;
-  const midPct = (stats.mid / total) * 100;
-  const lowPct = (stats.low / total) * 100;
-  const donePct = (stats.done / total) * 100;
-
-  const high = highPct;
-  const mid = high + midPct;
-  const low = mid + lowPct;
-  const done = low + donePct;
-
-  el.style.background = `radial-gradient(circle at 28% 22%, rgba(255,255,255,0.24), rgba(255,255,255,0) 48%), conic-gradient(from -90deg, var(--high) 0 ${high.toFixed(2)}%, var(--mid) ${high.toFixed(2)}% ${mid.toFixed(2)}%, var(--low-pie) ${mid.toFixed(2)}% ${low.toFixed(2)}%, var(--done) ${low.toFixed(2)}% ${done.toFixed(2)}%, rgba(255,255,255,0.1) ${done.toFixed(2)}% 100%)`;
-}
-
-function getProjectSliceCounts(projectId) {
-  const todoIds = state.lists[projectId]?.todo || [];
-  const doneIds = state.lists[projectId]?.done || [];
-  const totalTodo = todoIds.length || 1;
-  let high = 0;
-  let mid = 0;
-  let low = 0;
-
-  todoIds.forEach((id, index) => {
-    const seg = segmentForIndex(index, totalTodo);
-    if (seg === "high") high += 1;
-    else if (seg === "mid") mid += 1;
-    else low += 1;
-  });
-
-  return { done: doneIds.length, high, mid, low };
 }
 
 function finishProjectTitleEdit(projectId, wrap, titleEl, inputEl) {
@@ -1189,6 +1575,17 @@ function finishProjectTitleEdit(projectId, wrap, titleEl, inputEl) {
 
   project.name = name;
   titleEl.textContent = name;
+  wrap.classList.remove("editing");
+  saveState();
+}
+
+function finishProjectGoalEdit(projectId, wrap, goalEl, inputEl) {
+  const project = state.projects.find((p) => p.id === projectId);
+  if (!project) return;
+
+  const nextGoal = inputEl.value.trim();
+  project.goal = nextGoal;
+  goalEl.textContent = nextGoal;
   wrap.classList.remove("editing");
   saveState();
 }
@@ -1332,7 +1729,9 @@ function launchConfetti(anchorEl) {
   }
 }
 
-function projectColor(projectId) {
+function projectColor(project) {
+  if (project && typeof project === "object" && project.color) return project.color;
+  const projectId = typeof project === "string" ? project : project?.id || "";
   const hue = hashString(projectId) % 360;
   return `hsl(${hue} 40% 20%)`;
 }
@@ -1343,6 +1742,19 @@ function hashString(value) {
     hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
   }
   return hash;
+}
+
+function normalizeColorHex(color) {
+  if (!color) return "#25314a";
+  if (color.startsWith("#")) return color;
+  const probe = document.createElement("span");
+  probe.style.color = color;
+  document.body.append(probe);
+  const computed = getComputedStyle(probe).color;
+  probe.remove();
+  const match = computed.match(/\d+/g);
+  if (!match || match.length < 3) return "#25314a";
+  return `#${match.slice(0, 3).map((part) => Number(part).toString(16).padStart(2, "0")).join("")}`;
 }
 
 function makeId() {
@@ -1442,7 +1854,13 @@ function renderTaskTags(container, taskId) {
     const remove = document.createElement("button");
     remove.type = "button";
     remove.textContent = "×";
-    remove.addEventListener("click", () => {
+    remove.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    remove.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       removeTaskEmoji(taskId, emoji);
       renderTaskTags(container, taskId);
       saveState();
@@ -1512,8 +1930,8 @@ function exportPdfSummary() {
       <table><thead><tr><th>Project</th><th>To Do</th><th>Done</th><th>Total</th></tr></thead>
       <tbody>${report.projects.map((p) => `<tr><td>${escapeHtml(p.name)}</td><td>${p.todo}</td><td>${p.done}</td><td>${p.total}</td></tr>`).join("")}</tbody></table>
       <h2>Tasks</h2>
-      <table><thead><tr><th>Project</th><th>Status</th><th>Task</th><th>Tags</th><th>Created</th><th>Updated</th><th>Completed</th></tr></thead>
-      <tbody>${report.tasks.map((t) => `<tr><td>${escapeHtml(t.project)}</td><td>${t.status}</td><td>${escapeHtml(t.text)}</td><td>${escapeHtml(t.tags)}</td><td>${fmtTs(t.createdAt)}</td><td>${fmtTs(t.updatedAt)}</td><td>${fmtTs(t.completedAt)}</td></tr>`).join("")}</tbody></table>
+      <table><thead><tr><th>Project</th><th>Status</th><th>Task</th><th>Tags</th><th>Deadline</th><th>Created</th><th>Updated</th><th>Completed</th></tr></thead>
+      <tbody>${report.tasks.map((t) => `<tr><td>${escapeHtml(t.project)}</td><td>${t.status}</td><td>${escapeHtml(t.text)}</td><td>${escapeHtml(t.tags)}</td><td>${fmtTs(t.deadlineAt)}</td><td>${fmtTs(t.createdAt)}</td><td>${fmtTs(t.updatedAt)}</td><td>${fmtTs(t.completedAt)}</td></tr>`).join("")}</tbody></table>
     </body></html>
   `);
   win.document.close();
@@ -1529,8 +1947,8 @@ function exportSheetSummary() {
   rows.push(["Project", "To Do", "Done", "Total"]);
   report.projects.forEach((p) => rows.push([p.name, p.todo, p.done, p.total]));
   rows.push([]);
-  rows.push(["Project", "Status", "Task", "Tags", "Created", "Updated", "Completed"]);
-  report.tasks.forEach((t) => rows.push([t.project, t.status, t.text, t.tags, isoTs(t.createdAt), isoTs(t.updatedAt), isoTs(t.completedAt)]));
+  rows.push(["Project", "Status", "Task", "Tags", "Deadline", "Created", "Updated", "Completed"]);
+  report.tasks.forEach((t) => rows.push([t.project, t.status, t.text, t.tags, isoTs(t.deadlineAt), isoTs(t.createdAt), isoTs(t.updatedAt), isoTs(t.completedAt)]));
 
   const csv = rows.map((r) => r.map(csvCell).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -1594,13 +2012,14 @@ function importRowsIntoBoard(raw) {
     let project = projectByName.get(projectKey);
     if (!project) {
       const id = makeId();
-      project = { id, name: projectName, view: "todo", width: 1 };
+      project = { id, name: projectName, goal: "", color: "", view: "todo", width: 1 };
       state.projects.push(project);
       state.lists[id] = { todo: [], done: [] };
       projectByName.set(projectKey, project);
     }
 
     const status = normalizeImportedStatus(row.status);
+    const deadlineAt = parseImportedTimestamp(row.deadline);
     const createdAt = parseImportedTimestamp(row.created) ?? currentNow();
     const updatedAt = parseImportedTimestamp(row.updated) ?? createdAt;
     const completedAt = status === "done" ? (parseImportedTimestamp(row.completed) ?? updatedAt) : null;
@@ -1612,6 +2031,7 @@ function importRowsIntoBoard(raw) {
       projectId: project.id,
       status,
       emojis: parseImportedTags(row.tags),
+      deadlineAt,
       createdAt,
       updatedAt,
       completedAt
@@ -1711,9 +2131,10 @@ function extractImportedTaskRows(rows) {
       project: raw[1]?.trim() || "General",
       status: raw[2]?.trim() || "todo",
       tags: raw[3]?.trim() || "",
-      created: raw[4]?.trim() || "",
-      updated: raw[5]?.trim() || "",
-      completed: raw[6]?.trim() || ""
+      deadline: raw[4]?.trim() || "",
+      created: raw[5]?.trim() || "",
+      updated: raw[6]?.trim() || "",
+      completed: raw[7]?.trim() || ""
     });
   }
   return { rows: guess };
@@ -1735,6 +2156,7 @@ function mapHeaderIndices(headerRow) {
     status: byAny(["status", "state"]),
     task: byAny(["task", "title", "item", "description", "text"]),
     tags: byAny(["tags", "tag", "emoji", "emojis", "labels"]),
+    deadline: byAny(["deadline", "due", "due at", "due date"]),
     created: byAny(["created", "created at", "added"]),
     updated: byAny(["updated", "updated at", "modified"]),
     completed: byAny(["completed", "closed", "done at", "finished"])
@@ -1748,6 +2170,7 @@ function mapImportedRow(row, map) {
     status: String(at(map.status) || ""),
     task: String(at(map.task) || ""),
     tags: String(at(map.tags) || ""),
+    deadline: String(at(map.deadline) || ""),
     created: String(at(map.created) || ""),
     updated: String(at(map.updated) || ""),
     completed: String(at(map.completed) || "")
@@ -1811,6 +2234,7 @@ function buildReportData() {
           status: t.status,
           text: t.text || "",
           tags: (t.emojis || []).join(" "),
+          deadlineAt: t.deadlineAt || null,
           createdAt: t.createdAt || null,
           updatedAt: t.updatedAt || null,
           completedAt: t.completedAt || null
@@ -1844,4 +2268,92 @@ function formatTaskCreated(ts) {
     hour: "2-digit",
     minute: "2-digit"
   });
+}
+
+function renderTaskDeadline(container, taskId, isEditing) {
+  const task = state.tasks[taskId];
+  if (!task?.deadlineAt) {
+    container.innerHTML = "";
+    return;
+  }
+
+  const label = escapeHtml(formatDeadlineLabel(task.deadlineAt));
+  if (isEditing) {
+    container.innerHTML = `<button type="button" class="task-deadline-chip task-deadline-clearable">${label}<span class="task-deadline-clear" aria-label="Clear deadline">×</span></button>`;
+    return;
+  }
+
+  container.innerHTML = `<div class="task-deadline-chip">${label}</div>`;
+}
+
+function openDeadlinePicker(input, taskId) {
+  const task = state.tasks[taskId];
+  if (!task) return;
+  input.value = task.deadlineAt ? toDatetimeLocalValue(task.deadlineAt) : "";
+
+  if (typeof input.showPicker === "function") {
+    input.showPicker();
+    return;
+  }
+
+  input.focus();
+  input.click();
+}
+
+function setTaskDeadline(taskId, rawValue) {
+  const task = state.tasks[taskId];
+  if (!task) return;
+
+  const nextDeadline = parseDatetimeLocalValue(rawValue);
+  task.deadlineAt = nextDeadline;
+  task.updatedAt = currentNow();
+}
+
+function clearTaskDeadline(taskId) {
+  const task = state.tasks[taskId];
+  if (!task) return;
+  task.deadlineAt = null;
+  task.updatedAt = currentNow();
+}
+
+function toDatetimeLocalValue(ts) {
+  const d = new Date(ts);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hour = String(d.getHours()).padStart(2, "0");
+  const minute = String(d.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+}
+
+function parseDatetimeLocalValue(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function formatDeadlineLabel(ts) {
+  const diff = ts - currentNow();
+  const abs = Math.abs(diff);
+  const future = diff >= 0;
+
+  if (abs < 60 * 1000) return future ? "Due now" : "Late now";
+
+  const units = [
+    { ms: DAY_MS * 7, label: "w" },
+    { ms: DAY_MS, label: "d" },
+    { ms: 60 * 60 * 1000, label: "h" },
+    { ms: 60 * 1000, label: "m" }
+  ];
+
+  for (const unit of units) {
+    if (abs >= unit.ms || unit.label === "m") {
+      const count = Math.max(1, Math.round(abs / unit.ms));
+      if (future && unit.label === "d" && count === 1) return "Due tomorrow";
+      return future ? `Due in ${count}${unit.label}` : `Late by ${count}${unit.label}`;
+    }
+  }
+
+  return future ? "Due soon" : "Late";
 }
