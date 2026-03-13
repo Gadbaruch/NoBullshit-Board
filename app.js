@@ -1943,7 +1943,17 @@ function exportSheetSummary() {
   const report = buildReportData();
   const rows = [];
   rows.push(["Generated", new Date(report.generatedAt).toISOString()]);
+  rows.push(["Board Name", state.boardName || "_____"]);
   rows.push(["Total", report.total], ["Done", report.done], ["To Do", report.todo], ["Done Last 7d", report.doneLast7d], ["Done per Day 7d", report.donePerDay7d.toFixed(2)], ["Completion Rate", `${(report.completionRate * 100).toFixed(1)}%`], []);
+  rows.push(["Project Config", "Goal", "Color", "Width", "View"]);
+  state.projects.forEach((project) => rows.push([
+    project.name,
+    project.goal || "",
+    project.color || "",
+    String(clampProjectWidth(project.width ?? 1)),
+    project.view === "done" ? "done" : "todo"
+  ]));
+  rows.push([]);
   rows.push(["Project", "To Do", "Done", "Total"]);
   report.projects.forEach((p) => rows.push([p.name, p.todo, p.done, p.total]));
   rows.push([]);
@@ -1954,7 +1964,7 @@ function exportSheetSummary() {
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `task-summary-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `${slugifyBoardName(state.boardName || "board") || "board"}-sheet-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -1972,13 +1982,17 @@ function importSheetSummary() {
       try {
         const text = typeof reader.result === "string" ? reader.result : "";
         const result = importRowsIntoBoard(text);
-        if (!result.imported) {
-          alert("No tasks found to import.");
+        if (!result.changed) {
+          alert("No board data found to import.");
           return;
         }
         saveState();
         render();
-        alert(`Imported ${result.imported} task${result.imported === 1 ? "" : "s"} across ${result.projects} project${result.projects === 1 ? "" : "s"}.`);
+        const parts = [];
+        if (result.boardRenamed) parts.push("board name updated");
+        if (result.projectMetaApplied) parts.push(`${result.projectMetaApplied} project setting${result.projectMetaApplied === 1 ? "" : "s"} applied`);
+        if (result.imported) parts.push(`${result.imported} task${result.imported === 1 ? "" : "s"} imported`);
+        alert(parts.join(" • "));
       } catch {
         alert("Could not import this sheet.");
       }
@@ -1990,15 +2004,73 @@ function importSheetSummary() {
 
 function importRowsIntoBoard(raw) {
   const rows = parseSheetRows(raw);
-  if (!rows.length) return { imported: 0, projects: 0 };
+  if (!rows.length) return { imported: 0, projects: 0, projectMetaApplied: 0, boardRenamed: false, changed: false };
 
   const normalized = rows.map((row) => row.map((cell) => (cell || "").trim()));
-  const parsed = extractImportedTaskRows(normalized);
-  if (!parsed.rows.length) return { imported: 0, projects: 0 };
+  const parsed = extractImportedPayload(normalized);
 
   const projectByName = new Map(
     state.projects.map((p) => [p.name.trim().toLowerCase(), p])
   );
+
+  let boardRenamed = false;
+  if (parsed.boardName) {
+    const previousName = state.boardName;
+    const previousSlug = currentBoardSlug;
+    state.boardName = parsed.boardName;
+    syncBoardNameDisplay();
+    document.title = `${state.boardName} Board`;
+    const nextSlug = ensureUniqueBoardSlug(slugifyBoardName(parsed.boardName), previousSlug);
+    currentBoardSlug = nextSlug;
+    ensureBoardSlugInUrl(nextSlug);
+    if (previousSlug && previousSlug !== nextSlug) {
+      localStorage.removeItem(storageKeyFor(previousSlug));
+    }
+    boardRenamed = previousName !== parsed.boardName || previousSlug !== nextSlug;
+  }
+
+  let projectMetaApplied = 0;
+  for (const meta of parsed.projectMeta.values()) {
+    if (!meta.project) continue;
+    const projectKey = meta.project.toLowerCase();
+    let project = projectByName.get(projectKey);
+    if (!project) {
+      const id = makeId();
+      project = {
+        id,
+        name: meta.project,
+        goal: meta.goal || "",
+        color: meta.color || "",
+        view: meta.view === "done" ? "done" : "todo",
+        width: clampProjectWidth(Number.isFinite(meta.width) ? meta.width : 1)
+      };
+      state.projects.push(project);
+      state.lists[id] = { todo: [], done: [] };
+      projectByName.set(projectKey, project);
+      projectMetaApplied += 1;
+      continue;
+    }
+
+    if (typeof meta.goal === "string" && project.goal !== meta.goal) {
+      project.goal = meta.goal;
+      projectMetaApplied += 1;
+    }
+    if (typeof meta.color === "string" && project.color !== meta.color) {
+      project.color = meta.color;
+      projectMetaApplied += 1;
+    }
+    if (Number.isFinite(meta.width)) {
+      const nextWidth = clampProjectWidth(meta.width);
+      if (project.width !== nextWidth) {
+        project.width = nextWidth;
+        projectMetaApplied += 1;
+      }
+    }
+    if ((meta.view === "done" || meta.view === "todo") && project.view !== meta.view) {
+      project.view = meta.view;
+      projectMetaApplied += 1;
+    }
+  }
 
   let imported = 0;
   const touchedProjects = new Set();
@@ -2042,7 +2114,13 @@ function importRowsIntoBoard(raw) {
     imported += 1;
   }
 
-  return { imported, projects: touchedProjects.size };
+  return {
+    imported,
+    projects: touchedProjects.size,
+    projectMetaApplied,
+    boardRenamed,
+    changed: Boolean(imported || projectMetaApplied || boardRenamed)
+  };
 }
 
 function parseSheetRows(raw) {
@@ -2140,10 +2218,53 @@ function extractImportedTaskRows(rows) {
   return { rows: guess };
 }
 
+function extractImportedPayload(rows) {
+  const taskRows = extractImportedTaskRows(rows);
+  return {
+    boardName: extractImportedBoardName(rows),
+    projectMeta: extractImportedProjectMeta(rows),
+    rows: taskRows.rows
+  };
+}
+
+function extractImportedBoardName(rows) {
+  for (const row of rows) {
+    const key = String(row[0] || "").trim().toLowerCase();
+    const value = String(row[1] || "").trim();
+    if (!value) continue;
+    if (key === "board name" || key === "board" || key === "name") return value;
+  }
+  return "";
+}
+
+function extractImportedProjectMeta(rows) {
+  const headerIndex = findProjectMetaHeaderRow(rows);
+  const out = new Map();
+  if (headerIndex < 0) return out;
+
+  const map = mapProjectMetaHeaderIndices(rows[headerIndex]);
+  for (let i = headerIndex + 1; i < rows.length; i += 1) {
+    const row = rows[i];
+    if (!row.some((cell) => cell && cell.trim())) break;
+    const meta = mapImportedProjectMetaRow(row, map);
+    if (!meta.project) continue;
+    out.set(meta.project.toLowerCase(), meta);
+  }
+  return out;
+}
+
 function findTaskHeaderRow(rows) {
   for (let i = 0; i < rows.length; i += 1) {
     const map = mapHeaderIndices(rows[i]);
     if (map.task >= 0) return i;
+  }
+  return -1;
+}
+
+function findProjectMetaHeaderRow(rows) {
+  for (let i = 0; i < rows.length; i += 1) {
+    const map = mapProjectMetaHeaderIndices(rows[i]);
+    if (map.project >= 0 && (map.goal >= 0 || map.color >= 0 || map.width >= 0 || map.view >= 0)) return i;
   }
   return -1;
 }
@@ -2163,6 +2284,18 @@ function mapHeaderIndices(headerRow) {
   };
 }
 
+function mapProjectMetaHeaderIndices(headerRow) {
+  const headers = headerRow.map((h) => String(h || "").trim().toLowerCase());
+  const byAny = (terms) => headers.findIndex((h) => terms.some((t) => h === t || h.includes(t)));
+  return {
+    project: byAny(["project config", "project", "name", "list"]),
+    goal: byAny(["goal", "project goal", "focus"]),
+    color: byAny(["color", "colour", "project color"]),
+    width: byAny(["width", "project width", "size"]),
+    view: byAny(["view", "default view", "mode"])
+  };
+}
+
 function mapImportedRow(row, map) {
   const at = (idx) => (idx >= 0 ? row[idx] : "");
   return {
@@ -2174,6 +2307,19 @@ function mapImportedRow(row, map) {
     created: String(at(map.created) || ""),
     updated: String(at(map.updated) || ""),
     completed: String(at(map.completed) || "")
+  };
+}
+
+function mapImportedProjectMetaRow(row, map) {
+  const at = (idx) => (idx >= 0 ? row[idx] : "");
+  const width = Number.parseFloat(String(at(map.width) || "").trim());
+  const view = String(at(map.view) || "").trim().toLowerCase();
+  return {
+    project: String(at(map.project) || "").trim(),
+    goal: String(at(map.goal) || ""),
+    color: String(at(map.color) || "").trim(),
+    width: Number.isFinite(width) ? width : null,
+    view: view === "done" ? "done" : "todo"
   };
 }
 
