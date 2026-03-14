@@ -647,7 +647,7 @@ function drawTodoList(zone, taskIds) {
     const task = state.tasks[id];
     if (!task) return;
 
-    zone.append(taskNode(task, segmentForIndex(index, total)));
+    zone.append(taskNode(task, toneForIndex(index, total)));
   });
 }
 
@@ -658,31 +658,59 @@ function drawDoneList(zone, taskIds) {
     const task = state.tasks[id];
     if (!task) continue;
 
-    zone.append(taskNode(task, "low"));
+    zone.append(taskNode(task, { segment: "done", hue: null, progress: 1 }));
   }
 }
 
-function segmentForIndex(index, total) {
-  if (total <= 0) return "low";
+function toneForIndex(index, total) {
+  if (total <= 1) {
+    return { segment: "high", color: "rgb(255 92 120)", progress: 0 };
+  }
 
-  const highCount = Math.ceil(total / 3);
-  const midCount = Math.ceil((total - highCount) / 2);
-
-  if (index < highCount) return "high";
-  if (index < highCount + midCount) return "mid";
-  return "low";
+  const progress = Math.min(1, Math.max(0, index / (total - 1)));
+  const color = warmColorForProgress(progress);
+  const segment = progress < 0.34 ? "high" : progress < 0.67 ? "mid" : "low";
+  return { segment, color, progress };
 }
 
-function taskNode(task, segment) {
+function warmColorForProgress(progress) {
+  const stops = [
+    { at: 0, rgb: [255, 92, 120] },
+    { at: 0.36, rgb: [255, 146, 72] },
+    { at: 0.68, rgb: [255, 203, 88] },
+    { at: 1, rgb: [76, 206, 156] }
+  ];
+
+  for (let i = 1; i < stops.length; i += 1) {
+    const prev = stops[i - 1];
+    const next = stops[i];
+    if (progress <= next.at) {
+      const span = next.at - prev.at || 1;
+      const local = (progress - prev.at) / span;
+      const rgb = prev.rgb.map((channel, idx) => Math.round(channel + (next.rgb[idx] - channel) * local));
+      return `rgb(${rgb[0]} ${rgb[1]} ${rgb[2]})`;
+    }
+  }
+
+  const last = stops[stops.length - 1].rgb;
+  return `rgb(${last[0]} ${last[1]} ${last[2]})`;
+}
+
+function taskNode(task, tone) {
   const node = els.taskTemplate.content.firstElementChild.cloneNode(true);
   node.dataset.id = task.id;
   node.dataset.status = task.status;
-  node.dataset.segment = segment;
+  node.dataset.segment = tone.segment;
+  if (task.status !== "done" && tone.color) {
+    node.style.setProperty("--task-accent", tone.color);
+  } else {
+    node.style.removeProperty("--task-accent");
+  }
   if (taskSelection.has(task.id)) node.classList.add("selected");
   const closedLabel = task.completedAt ? `Closed ${formatTaskCreated(task.completedAt)}` : "";
   const createdLabel = task.createdAt ? `Created ${formatTaskCreated(task.createdAt)}` : "";
   node.dataset.createdLabel = task.status === "done" ? closedLabel : createdLabel;
-  applyTaskAgeVisual(node, task, segment);
+  applyTaskAgeVisual(node, task, tone);
 
   const body = node.querySelector(".task-body");
   const deadlineEl = node.querySelector(".task-deadline");
@@ -1590,13 +1618,13 @@ function finishProjectGoalEdit(projectId, wrap, goalEl, inputEl) {
   saveState();
 }
 
-function applyTaskAgeVisual(node, task, segment) {
+function applyTaskAgeVisual(node, task, tone) {
   if (task.status === "done") return;
   const ageDays = Math.floor((currentNow() - (task.createdAt || currentNow())) / DAY_MS);
   if (ageDays < 3) return;
 
   node.classList.add("flash-once");
-  if (segment === "mid" && ageDays >= 7) {
+  if (tone.segment === "mid" && ageDays >= 7) {
     node.classList.add("age-alert-soft");
     return;
   }
