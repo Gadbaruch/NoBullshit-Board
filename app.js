@@ -327,6 +327,9 @@ function wireEvents() {
 
   document.addEventListener("click", (event) => {
     if (!els.moreMenu.contains(event.target)) closeMoreMenu();
+    if (shouldClearTaskSelectionFromClick(event)) {
+      clearTaskSelection();
+    }
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeMoreMenu();
@@ -510,7 +513,7 @@ function renderBoard() {
   for (const project of state.projects) {
     const node = els.projectTemplate.content.firstElementChild.cloneNode(true);
     node.dataset.projectId = project.id;
-    node.style.setProperty("--project-bg", projectColor(project));
+    applyProjectTheme(node, project);
     node.style.setProperty("--project-width", String(clampProjectWidth(project.width ?? 1)));
 
     const titleWrap = node.querySelector(".project-title-wrap");
@@ -574,7 +577,7 @@ function renderBoard() {
     });
     colorInput.addEventListener("input", () => {
       project.color = colorInput.value;
-      node.style.setProperty("--project-bg", projectColor(project));
+      applyProjectTheme(node, project);
     });
     colorInput.addEventListener("change", () => {
       project.color = colorInput.value;
@@ -1521,11 +1524,26 @@ function onTaskMarqueeMove(event) {
 function onTaskMarqueeEnd() {
   if (!marqueeState) return;
   if (!marqueeState.active && !marqueeState.additive) {
-    taskSelection = new Set();
-    lastSelectedTaskId = null;
-    render();
+    clearTaskSelection();
   }
   stopTaskMarqueeSelection();
+}
+
+function clearTaskSelection() {
+  if (!taskSelection.size) return;
+  taskSelection = new Set();
+  lastSelectedTaskId = null;
+  render();
+}
+
+function shouldClearTaskSelectionFromClick(event) {
+  if (!taskSelection.size) return false;
+  if (document.body.classList.contains("is-dragging")) return false;
+  const target = event.target;
+  if (!(target instanceof Element)) return false;
+  if (target.closest(".task.selected")) return false;
+  if (target.closest(".task-selection-box")) return false;
+  return true;
 }
 
 function stopTaskMarqueeSelection() {
@@ -1762,6 +1780,51 @@ function projectColor(project) {
   const projectId = typeof project === "string" ? project : project?.id || "";
   const hue = hashString(projectId) % 360;
   return `hsl(${hue} 40% 20%)`;
+}
+
+function applyProjectTheme(node, project) {
+  const bg = projectColor(project);
+  node.style.setProperty("--project-bg", bg);
+  const contrast = projectTextContrast(bg);
+  node.style.setProperty("--project-title-color", contrast.title);
+  node.style.setProperty("--project-goal-color", contrast.goal);
+}
+
+function projectTextContrast(color) {
+  const rgb = parseColorToRgb(normalizeColorHex(color));
+  if (!rgb) {
+    return {
+      title: "#f3f6ff",
+      goal: "color-mix(in srgb, var(--ink), var(--muted) 62%)"
+    };
+  }
+
+  const brightness = perceivedBrightness(rgb);
+  if (brightness < 170) {
+    return {
+      title: "#f3f6ff",
+      goal: "color-mix(in srgb, var(--ink), var(--muted) 62%)"
+    };
+  }
+
+  return {
+    title: "rgba(18, 24, 37, 0.92)",
+    goal: "rgba(22, 28, 42, 0.72)"
+  };
+}
+
+function parseColorToRgb(color) {
+  const hex = String(color || "").trim().replace("#", "");
+  if (!/^[\da-f]{6}$/i.test(hex)) return null;
+  return {
+    r: Number.parseInt(hex.slice(0, 2), 16),
+    g: Number.parseInt(hex.slice(2, 4), 16),
+    b: Number.parseInt(hex.slice(4, 6), 16)
+  };
+}
+
+function perceivedBrightness({ r, g, b }) {
+  return (r * 299 + g * 587 + b * 114) / 1000;
 }
 
 function hashString(value) {

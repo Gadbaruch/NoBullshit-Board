@@ -385,6 +385,7 @@ body.is-dragging .project-trash {
 .project-title {
   margin: 0;
   font-size: 1.2rem;
+  color: var(--project-title-color, #f3f6ff);
   cursor: text;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -442,7 +443,7 @@ body.is-dragging .project-trash {
   min-height: 22px;
   padding: 2px 2px 6px;
   border-radius: 0;
-  color: color-mix(in srgb, var(--ink), var(--muted) 62%);
+  color: var(--project-goal-color, color-mix(in srgb, var(--ink), var(--muted) 62%));
   background: transparent;
   cursor: text;
   white-space: pre-wrap;
@@ -719,8 +720,8 @@ body.is-dragging .project-trash {
 
 .task.selected {
   box-shadow:
-    0 0 0 1.5px rgba(215, 232, 255, 0.88),
-    0 0 0 4px rgba(120, 166, 255, 0.16),
+    0 0 0 1.5px rgba(255, 223, 148, 0.92),
+    0 0 0 4px rgba(255, 192, 78, 0.2),
     var(--shadow);
 }
 
